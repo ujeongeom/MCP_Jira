@@ -1,0 +1,10 @@
+{
+  "jira": {
+    "baseUrl": "https://your-domain.atlassian.net",
+    "username": "your-email@example.com",
+    "apiToken": "your-jira-api-token"
+  },
+  "openai": {
+    "apiKey": "your-openai-api-key"
+  }
+} 
