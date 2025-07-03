@@ -118,14 +118,11 @@ function extractDescription(issueData) {
     if (!fields) {
         throw new Error('이슈 필드 정보를 찾을 수 없습니다.');
     }
-    // 다양한 설명 필드 확인
     const description = fields.description;
     const summary = fields.summary;
     let descriptionText = '';
-    // description 필드 처리
     if (description) {
         if (typeof description === 'string') {
-            // 일반 텍스트인 경우
             descriptionText = description.trim();
         }
         else if (typeof description === 'object') {
@@ -136,11 +133,9 @@ function extractDescription(issueData) {
             }
         }
     }
-    // description이 없으면 summary 사용
     if (!descriptionText && summary) {
         descriptionText = `제목: ${summary}`;
     }
-    // 여전히 없으면 기본 메시지
     if (!descriptionText) {
         descriptionText = '이슈에 상세한 설명이 없습니다. 제목과 기본 정보만으로 테스트 케이스를 생성합니다.';
     }
@@ -149,12 +144,21 @@ function extractDescription(issueData) {
 function extractTextFromContent(content) {
     let text = '';
     for (const block of content) {
-        if (block.content && Array.isArray(block.content)) {
+        if (typeof block === 'object' &&
+            block !== null &&
+            'content' in block &&
+            Array.isArray(block.content)) {
             for (const item of block.content) {
-                if (item.text) {
-                    text += item.text + ' ';
+                if (typeof item === 'object' &&
+                    item !== null &&
+                    'text' in item &&
+                    typeof item.text === 'string') {
+                    text += (item.text) + ' ';
                 }
-                else if (item.content && Array.isArray(item.content)) {
+                else if (typeof item === 'object' &&
+                    item !== null &&
+                    'content' in item &&
+                    Array.isArray(item.content)) {
                     text += extractTextFromContent(item.content) + ' ';
                 }
             }
@@ -234,6 +238,41 @@ async function fetchProjectIssues(config, projectKey) {
         throw error;
     }
 }
+// Jira 이슈에 댓글 등록 함수 추가
+async function addCommentToJiraIssue(config, issueKey, markdown) {
+    const url = `${config.jira.baseUrl}/rest/api/2/issue/${issueKey}/comment`;
+    const auth = Buffer.from(`${config.jira.username}:${config.jira.apiToken}`).toString('base64');
+    try {
+        const response = await axios_1.default.post(url, { body: markdown }, {
+            headers: {
+                'Authorization': `Basic ${auth}`,
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+            },
+            timeout: 10000,
+            httpsAgent: new https.Agent({ rejectUnauthorized: false })
+        });
+        console.log(`✅ Jira 댓글 등록 성공: ${response.status}`);
+    }
+    catch (error) {
+        if (axios_1.default.isAxiosError(error)) {
+            console.log(`❌ Jira 댓글 등록 실패: ${error.response?.status} - ${error.response?.statusText}`);
+            if (error.response?.status === 404) {
+                throw new Error(`Jira 이슈를 찾을 수 없습니다: ${issueKey} (404 Not Found)`);
+            }
+            else if (error.response?.status === 401) {
+                throw new Error('Jira 인증에 실패했습니다. 사용자명과 API 토큰을 확인해주세요. (401 Unauthorized)');
+            }
+            else if (error.response?.status === 403) {
+                throw new Error('Jira 접근 권한이 없습니다. (403 Forbidden)');
+            }
+            else {
+                throw new Error(`Jira 댓글 등록 실패: ${error.message} (${error.response?.status})`);
+            }
+        }
+        throw new Error(`알 수 없는 오류: ${error}`);
+    }
+}
 // 메인 CLI 인터페이스
 async function main() {
     console.log('🚀 Jira 테스트 케이스 생성기');
@@ -256,17 +295,20 @@ async function main() {
         if (issues.length > 0) {
             console.log('\n📝 사용 가능한 이슈들:');
             issues.forEach((issue) => {
-                const key = issue.key;
-                const summary = issue.fields?.summary || '제목 없음';
-                const type = issue.fields?.issuetype?.name || '알 수 없음';
-                console.log(`  - ${key} (${type}): ${summary}`);
+                if (typeof issue === 'object' && issue !== null && 'key' in issue && 'fields' in issue) {
+                    const key = issue.key;
+                    const fields = issue.fields;
+                    const summary = fields?.summary || '제목 없음';
+                    const type = fields?.issuetype?.name || '알 수 없음';
+                    console.log(`  - ${key} (${type}): ${summary}`);
+                }
             });
         }
         else {
             console.log('⚠️  AUT 프로젝트에서 이슈를 찾을 수 없습니다.');
         }
     }
-    catch (error) {
+    catch {
         console.log('⚠️  프로젝트 이슈 조회 실패, 개별 이슈 조회를 시도합니다.');
     }
     console.log('');
@@ -311,6 +353,27 @@ async function main() {
         console.log('\n' + '-'.repeat(30) + '\n');
     }
     rl.close();
+    // 명령행 인자 파싱 (댓글 등록 모드)
+    const args = process.argv.slice(2);
+    if (args[0] === '--comment' && args.length === 3) {
+        const issueKey = args[1];
+        const filePath = args[2];
+        if (!fs.existsSync(filePath)) {
+            console.error(`❌ 파일을 찾을 수 없습니다: ${filePath}`);
+            process.exit(1);
+        }
+        const markdown = fs.readFileSync(filePath, 'utf8');
+        try {
+            await addCommentToJiraIssue(config, issueKey, markdown);
+            console.log(`🎉 Jira 이슈(${issueKey})에 테스트케이스(마크다운) 댓글 등록 완료!`);
+        }
+        catch (error) {
+            const errorMessage = error instanceof Error ? error.message : '알 수 없는 오류';
+            console.error(`❌ 오류: ${errorMessage}`);
+            process.exit(1);
+        }
+        process.exit(0);
+    }
 }
 // 프로그램 실행
 main().catch((error) => {
